@@ -1,1 +1,12 @@
-{}
+{
+  "on_sale_slugs": {
+    "disclosure-day": "Disclosure Day",
+    "michael": "Michael",
+    "roid": "Roid",
+    "siccin-9-18": "Siccin 9 (18+)",
+    "supergirl": "Supergirl",
+    "supergirl-3d": "Supergirl (3D)",
+    "moana": "Moana"
+  },
+  "last_checked": "2026-07-13T10:47:48.069005+00:00"
+}
