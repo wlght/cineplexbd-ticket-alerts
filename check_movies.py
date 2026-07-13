@@ -25,12 +25,15 @@ from datetime import datetime, timezone
 import requests
 from playwright.async_api import async_playwright
 
-TARGET_URL = "https://www.cineplexbd.com/movie-list"
+TARGET_URLS = [
+    "https://www.cineplexbd.com/movie-list",
+    "https://www.cineplexbd.com/show-time",
+]
 STATE_FILE = "state.json"
 DEBUG_FILE = "debug_capture.json"
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
-KEYWORDS = ["movie", "show", "film", "ticket"]
+KEYWORDS = ["movie", "show", "film", "ticket", "date", "time", "theatre", "cinema", "hall"]
 
 captured = []
 
@@ -54,8 +57,9 @@ async def fetch_page_data():
         browser = await p.chromium.launch()
         page = await browser.new_page()
         page.on("response", lambda r: asyncio.ensure_future(on_response(r)))
-        await page.goto(TARGET_URL, wait_until="networkidle", timeout=60000)
-        await page.wait_for_timeout(4000)
+        for url in TARGET_URLS:
+            await page.goto(url, wait_until="networkidle", timeout=60000)
+            await page.wait_for_timeout(4000)
         await browser.close()
 
 
@@ -75,7 +79,7 @@ def notify_discord(title, extra=""):
     if not WEBHOOK_URL:
         print(f"[no webhook configured] would have notified: {title}")
         return
-    content = f"\U0001F3AC **{title}** just went on sale on Cineplex BD!\n{TARGET_URL}"
+    content = f"\U0001F3AC **{title}** just went on sale on Cineplex BD!\nhttps://www.cineplexbd.com/show-time"
     if extra:
         content += f"\n{extra}"
     try:
@@ -84,7 +88,7 @@ def notify_discord(title, extra=""):
         print(f"Discord post failed: {e}")
 
 
-def guess_movies(payload):
+def guess_movies(payload, source_url):
     """Heuristic extractor: finds dict entries that look like movies."""
     results = []
 
@@ -126,7 +130,13 @@ def guess_movies(payload):
                         for w in ("open", "now showing", "book", "sale", "available")
                     )
                 results.append(
-                    {"title": title, "raw_status": raw_status, "on_sale": on_sale, "raw_node": node}
+                    {
+                        "title": title,
+                        "raw_status": raw_status,
+                        "on_sale": on_sale,
+                        "raw_node": node,
+                        "source_url": source_url,
+                    }
                 )
             for v in node.values():
                 walk(v)
@@ -147,24 +157,22 @@ async def main():
 
     all_movies = []
     for c in captured:
-        all_movies.extend(guess_movies(c["body"]))
+        all_movies.extend(guess_movies(c["body"], c["url"]))
 
     print(f"\nHeuristic detected {len(all_movies)} movie-like entries:")
     for m in all_movies[:30]:
-        print("   title:", m["title"], "| guessed on_sale:", m["on_sale"])
+        print("   title:", m["title"], "| guessed on_sale:", m["on_sale"], "| source:", m["source_url"])
 
-    seen_titles = set()
-    print("\nFull raw fields for a few sample entries (to find the real status field):")
-    shown = 0
+    seen_by_source = {}
+    print("\nFull raw fields for a few sample entries per endpoint (to find the real status field):")
     for m in all_movies:
-        if m["title"] in seen_titles:
+        src = m["source_url"]
+        seen_by_source.setdefault(src, set())
+        if m["title"] in seen_by_source[src] or len(seen_by_source[src]) >= 2:
             continue
-        seen_titles.add(m["title"])
-        print(f"--- {m['title']} ---")
+        seen_by_source[src].add(m["title"])
+        print(f"--- [{src}] {m['title']} ---")
         print(json.dumps(m["raw_node"], indent=2, ensure_ascii=False))
-        shown += 1
-        if shown >= 3:
-            break
 
     if "--diagnostic" in sys.argv:
         print("\nDiagnostic mode: not sending notifications or updating state.")
