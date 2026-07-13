@@ -125,7 +125,9 @@ def guess_movies(payload):
                         w in raw_status.lower()
                         for w in ("open", "now showing", "book", "sale", "available")
                     )
-                results.append({"title": title, "raw_status": raw_status, "on_sale": on_sale})
+                results.append(
+                    {"title": title, "raw_status": raw_status, "on_sale": on_sale, "raw_node": node}
+                )
             for v in node.values():
                 walk(v)
 
@@ -149,7 +151,20 @@ async def main():
 
     print(f"\nHeuristic detected {len(all_movies)} movie-like entries:")
     for m in all_movies[:30]:
-        print("  ", m)
+        print("   title:", m["title"], "| guessed on_sale:", m["on_sale"])
+
+    seen_titles = set()
+    print("\nFull raw fields for a few sample entries (to find the real status field):")
+    shown = 0
+    for m in all_movies:
+        if m["title"] in seen_titles:
+            continue
+        seen_titles.add(m["title"])
+        print(f"--- {m['title']} ---")
+        print(json.dumps(m["raw_node"], indent=2, ensure_ascii=False))
+        shown += 1
+        if shown >= 3:
+            break
 
     if "--diagnostic" in sys.argv:
         print("\nDiagnostic mode: not sending notifications or updating state.")
