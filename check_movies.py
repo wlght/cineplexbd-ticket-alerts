@@ -103,6 +103,12 @@ def extract_movies(payload):
 
 
 async def main():
+    if "--test-notify" in sys.argv:
+        print("Sending test notification to Discord...")
+        notify_discord("Test Movie (this is a test, not a real listing)")
+        print("Done. Check your Discord channel.")
+        return
+
     await fetch_page_data()
 
     with open(DEBUG_FILE, "w") as f:
