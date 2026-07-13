@@ -2,18 +2,17 @@
 Cineplex BD ticket-sale watcher.
 
 How it works:
-1. Opens https://www.cineplexbd.com/movie-list in a headless browser.
-2. Listens to every network response the page makes, and captures any
-   JSON response whose URL looks movie/show/ticket related. This finds
-   the site's real data API automatically, no manual DevTools needed.
-3. Walks that JSON looking for movie-like entries (something with a
-   title/name field) and guesses an "on sale" status from any
-   status-like field.
-4. Compares against state.json (from the last run). If a movie flips
-   from "not on sale" to "on sale", posts a message to a Discord webhook.
+1. Opens https://www.cineplexbd.com/show-time in a headless browser.
+2. Captures the response from the site's own API call to
+   /api/v1/movie-show-time — this is the list of movies that
+   currently have active showtimes, i.e. tickets on sale right now.
+3. Compares the set of on-sale movie slugs against the previous run
+   (state.json). Any slug that's new gets posted to Discord.
+4. On the very first run (no prior state), it just saves a baseline
+   silently instead of notifying about every movie already on sale.
 
 Run with --diagnostic to just print what it finds, without notifying
-or touching state.json. Use this first to sanity-check detection.
+or touching state.json.
 """
 
 import asyncio
@@ -25,26 +24,22 @@ from datetime import datetime, timezone
 import requests
 from playwright.async_api import async_playwright
 
-TARGET_URLS = [
-    "https://www.cineplexbd.com/movie-list",
-    "https://www.cineplexbd.com/show-time",
-]
+TARGET_URL = "https://www.cineplexbd.com/show-time"
+SHOWTIME_API_HINT = "movie-show-time"
+
 STATE_FILE = "state.json"
 DEBUG_FILE = "debug_capture.json"
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
-
-KEYWORDS = ["movie", "show", "film", "ticket", "date", "time", "theatre", "cinema", "hall"]
 
 captured = []
 
 
 async def on_response(response):
     try:
+        if SHOWTIME_API_HINT not in response.url.lower():
+            return
         ct = response.headers.get("content-type", "")
         if "json" not in ct:
-            return
-        url_l = response.url.lower()
-        if not any(k in url_l for k in KEYWORDS):
             return
         body = await response.json()
         captured.append({"url": response.url, "body": body})
@@ -57,9 +52,8 @@ async def fetch_page_data():
         browser = await p.chromium.launch()
         page = await browser.new_page()
         page.on("response", lambda r: asyncio.ensure_future(on_response(r)))
-        for url in TARGET_URLS:
-            await page.goto(url, wait_until="networkidle", timeout=60000)
-            await page.wait_for_timeout(4000)
+        await page.goto(TARGET_URL, wait_until="networkidle", timeout=60000)
+        await page.wait_for_timeout(4000)
         await browser.close()
 
 
@@ -75,69 +69,32 @@ def save_state(state):
         json.dump(state, f, indent=2, ensure_ascii=False)
 
 
-def notify_discord(title, extra=""):
+def notify_discord(title):
     if not WEBHOOK_URL:
         print(f"[no webhook configured] would have notified: {title}")
         return
-    content = f"\U0001F3AC **{title}** just went on sale on Cineplex BD!\nhttps://www.cineplexbd.com/show-time"
-    if extra:
-        content += f"\n{extra}"
+    content = (
+        f"\U0001F3AC **{title}** just went on sale on Cineplex BD!\n"
+        f"https://www.cineplexbd.com/show-time"
+    )
     try:
         requests.post(WEBHOOK_URL, json={"content": content}, timeout=15)
     except Exception as e:
         print(f"Discord post failed: {e}")
 
 
-def guess_movies(payload, source_url):
-    """Heuristic extractor: finds dict entries that look like movies."""
-    results = []
+def extract_movies(payload):
+    """Walk the payload, collecting any dict entry that looks like a
+    movie-show-time record (has both a slug and a title)."""
+    results = {}
 
     def walk(node):
         if isinstance(node, list):
             for item in node:
                 walk(item)
         elif isinstance(node, dict):
-            keys = {k.lower(): k for k in node.keys()}
-            name_key = next(
-                (keys[k] for k in keys if k in ("title", "name", "moviename", "movie_name")),
-                None,
-            )
-            if name_key:
-                title = node[name_key]
-                status_key = next(
-                    (
-                        keys[k]
-                        for k in keys
-                        if k
-                        in (
-                            "status",
-                            "bookingstatus",
-                            "isbookingopen",
-                            "ticketstatus",
-                            "showstatus",
-                            "booking_open",
-                        )
-                    ),
-                    None,
-                )
-                raw_status = node.get(status_key) if status_key else None
-                on_sale = None
-                if isinstance(raw_status, bool):
-                    on_sale = raw_status
-                elif isinstance(raw_status, str):
-                    on_sale = any(
-                        w in raw_status.lower()
-                        for w in ("open", "now showing", "book", "sale", "available")
-                    )
-                results.append(
-                    {
-                        "title": title,
-                        "raw_status": raw_status,
-                        "on_sale": on_sale,
-                        "raw_node": node,
-                        "source_url": source_url,
-                    }
-                )
+            if "slug" in node and "title" in node and node["slug"]:
+                results[node["slug"]] = node["title"]
             for v in node.values():
                 walk(v)
 
@@ -151,49 +108,36 @@ async def main():
     with open(DEBUG_FILE, "w") as f:
         json.dump(captured, f, indent=2, ensure_ascii=False)
 
-    print(f"Captured {len(captured)} JSON response(s) matching keywords:")
+    print(f"Captured {len(captured)} response(s) from the show-time API.")
+
+    current_on_sale = {}
     for c in captured:
-        print(" -", c["url"])
+        current_on_sale.update(extract_movies(c["body"]))
 
-    all_movies = []
-    for c in captured:
-        all_movies.extend(guess_movies(c["body"], c["url"]))
-
-    print(f"\nHeuristic detected {len(all_movies)} movie-like entries:")
-    for m in all_movies[:30]:
-        print("   title:", m["title"], "| guessed on_sale:", m["on_sale"], "| source:", m["source_url"])
-
-    seen_by_source = {}
-    print("\nFull raw fields for a few sample entries per endpoint (to find the real status field):")
-    for m in all_movies:
-        src = m["source_url"]
-        seen_by_source.setdefault(src, set())
-        if m["title"] in seen_by_source[src] or len(seen_by_source[src]) >= 2:
-            continue
-        seen_by_source[src].add(m["title"])
-        print(f"--- [{src}] {m['title']} ---")
-        print(json.dumps(m["raw_node"], indent=2, ensure_ascii=False))
+    print(f"\nCurrently on sale ({len(current_on_sale)} movies):")
+    for slug, title in current_on_sale.items():
+        print(f"   {title}  (slug: {slug})")
 
     if "--diagnostic" in sys.argv:
         print("\nDiagnostic mode: not sending notifications or updating state.")
-        print(f"Full capture written to {DEBUG_FILE} (check the Action logs/artifact).")
         return
 
     state = load_state()
-    for m in all_movies:
-        title = str(m["title"]).strip()
-        if not title:
-            continue
-        prev_on_sale = state.get(title, {}).get("on_sale")
-        curr_on_sale = m["on_sale"]
-        if curr_on_sale and not prev_on_sale:
-            notify_discord(title, extra=f"(status: {m['raw_status']})")
-        state[title] = {
-            "on_sale": curr_on_sale,
-            "raw_status": m["raw_status"],
-            "last_checked": datetime.now(timezone.utc).isoformat(),
-        }
+    is_first_run = "on_sale_slugs" not in state
+    prev_on_sale = state.get("on_sale_slugs", {})
 
+    if is_first_run:
+        print("\nFirst run: seeding baseline state, no notifications sent.")
+    else:
+        new_slugs = set(current_on_sale) - set(prev_on_sale)
+        for slug in new_slugs:
+            print(f"NEW on sale: {current_on_sale[slug]}")
+            notify_discord(current_on_sale[slug])
+        if not new_slugs:
+            print("\nNo new movies on sale since last check.")
+
+    state["on_sale_slugs"] = current_on_sale
+    state["last_checked"] = datetime.now(timezone.utc).isoformat()
     save_state(state)
 
 
