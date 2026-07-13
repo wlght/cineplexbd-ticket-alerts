@@ -1,0 +1,56 @@
+name: Cineplex Ticket Watcher
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 minutes
+  workflow_dispatch:
+    inputs:
+      diagnostic:
+        description: 'Diagnostic run (no Discord notify, no state update)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright requests
+          playwright install --with-deps chromium
+
+      - name: Run checker
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ "${{ github.event.inputs.diagnostic }}" = "true" ]; then
+            python check_movies.py --diagnostic
+          else
+            python check_movies.py
+          fi
+
+      - name: Upload debug capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-capture
+          path: debug_capture.json
+          retention-days: 3
+
+      - name: Commit updated state
+        if: github.event.inputs.diagnostic != 'true'
+        run: |
+          git config user.name "cineplex-bot"
+          git config user.email "actions@github.com"
+          git add state.json
+          git diff --quiet --cached || git commit -m "Update movie state [skip ci]"
+          git push
