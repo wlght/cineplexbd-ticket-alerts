@@ -1,4 +1,10 @@
 {
-  "on_sale_slugs": {},
-  "last_checked": "2026-07-24T07:16:40.643649+00:00"
+  "on_sale_slugs": {
+    "billie-eilish-hit-me-hard-and-soft-the-tour-live-in-3d": "Billie Eilish: Hit Me Hard and Soft - The Tour Live in 3D",
+    "evil-dead-burn-18": "Evil Dead Burn (18+)",
+    "moana": "Moana",
+    "supergirl-3d": "Supergirl (3D)",
+    "the-odyssey": "The Odyssey"
+  },
+  "last_checked": "2026-07-24T09:40:20.089237+00:00"
 }
